@@ -1,0 +1,210 @@
+#!/usr/bin/env bash
+
+set -eu
+
+VERSION="0.1.0"
+PROG="${0##*/}"
+
+if [ -t 1 ] && [ -z "${NO_COLOR:-}" ]; then
+  C_RED=$(printf '\033[31m'); C_YEL=$(printf '\033[33m')
+  C_GRN=$(printf '\033[32m'); C_DIM=$(printf '\033[2m')
+  C_BLD=$(printf '\033[1m'); C_OFF=$(printf '\033[0m')
+else
+  C_RED=; C_YEL=; C_GRN=; C_DIM=; C_BLD=; C_OFF=
+fi
+
+depth=4
+days=14
+do_fetch=0
+show_hidden=0
+n_risk=0
+n_stale=0
+n_repos=0
+
+usage() {
+  cat <<USAGE
+${PROG} ${VERSION} — find the work that exists only on your disk.
+
+Usage:
+  ${PROG} [path ...]      scan for git repositories under each path (default: .)
+
+Options:
+  --depth N     how deep to look for repositories (default: ${depth})
+  --days N      report uncommitted changes and stashes only when older
+                than N days (default: ${days}); unpushed commits are
+                always reported
+  --fetch       refresh remote refs first (network, slow on many repos)
+  --hidden      also scan repositories inside hidden directories
+                (~/.nvm, ~/.oh-my-zsh and friends are skipped by default —
+                they are other people's clones, not your work)
+  -h, --help    show this help
+  --version     show version
+
+Exit codes:
+  0  nothing is at risk
+  1  something exists only on this disk
+USAGE
+}
+
+mtime() {
+  stat -f %m "$1" 2>/dev/null || stat -c %Y "$1" 2>/dev/null || echo 0
+}
+
+plural() { [ "$1" -eq 1 ] && printf '%s' "$2" || printf '%s' "$3"; }
+
+tilde() { case $1 in "$HOME"/*) printf '~%s' "${1#"$HOME"}" ;; *) printf '%s' "$1" ;; esac; }
+
+paths=""
+while [ $# -gt 0 ]; do
+  case $1 in
+    -h|--help)  usage; exit 0 ;;
+    --version)  printf '%s %s\n' "$PROG" "$VERSION"; exit 0 ;;
+    --depth)    shift; depth=${1:?--depth needs a number} ;;
+    --days)     shift; days=${1:?--days needs a number} ;;
+    --fetch)    do_fetch=1 ;;
+    --hidden)   show_hidden=1 ;;
+    --)         shift; break ;;
+    -*)         printf '%s: unknown option: %s\n' "$PROG" "$1" >&2; usage >&2; exit 64 ;;
+    *)          paths="${paths}${1}
+" ;;
+  esac
+  shift
+done
+[ -n "$paths" ] || paths=".
+"
+
+command -v git >/dev/null 2>&1 || {
+  printf '%s: git not found in PATH\n' "$PROG" >&2; exit 69; }
+
+now=$(date +%s)
+cutoff=$((days * 86400))
+report=""
+
+emit() { report="${report}$1
+"; }
+
+while IFS= read -r base; do
+  [ -n "$base" ] || continue
+  [ -e "$base" ] || { printf '%s: no such path: %s\n' "$PROG" "$base" >&2; exit 66; }
+
+  while IFS= read -r gitdir; do
+    repo=$(dirname "$gitdir")
+    if [ "$show_hidden" -eq 0 ]; then
+      case $repo in */.*) continue ;; esac
+    fi
+    git -C "$repo" rev-parse --git-dir >/dev/null 2>&1 || continue
+    n_repos=$((n_repos + 1))
+
+    [ "$do_fetch" -eq 1 ] && git -C "$repo" fetch --quiet --all 2>/dev/null || true
+
+    lines=""
+    worst=0
+
+    has_remote=1
+    git -C "$repo" remote 2>/dev/null | grep -q . || has_remote=0
+
+    if [ "$has_remote" -eq 0 ]; then
+      total=$(git -C "$repo" rev-list --count HEAD --branches 2>/dev/null || echo 0)
+      if [ "${total:-0}" -gt 0 ]; then
+        ts=$(git -C "$repo" log -1 --format=%ct HEAD --branches 2>/dev/null || echo "$now")
+        d=$(( (now - ts) / 86400 ))
+        lines="${lines}    no remote configured — ${total} $(plural "$total" commit commits) $(plural "$total" exists exist) only on this disk (last ${d}d ago)
+"
+        worst=2
+      fi
+    else
+      unpushed=$(git -C "$repo" rev-list --count HEAD --branches --not --remotes 2>/dev/null || echo 0)
+      if [ "${unpushed:-0}" -gt 0 ]; then
+        ts=$(git -C "$repo" log -1 --format=%ct HEAD --branches --not --remotes 2>/dev/null || echo "$now")
+        d=$(( (now - ts) / 86400 ))
+        brs=$(git -C "$repo" for-each-ref --format='%(refname:short)' refs/heads 2>/dev/null \
+              | while IFS= read -r b; do
+                  c=$(git -C "$repo" rev-list --count "$b" --not --remotes 2>/dev/null || echo 0)
+                  if [ "${c:-0}" -gt 0 ]; then printf '%s(%s) ' "$b" "$c"; fi
+                done) || brs=""
+        if ! git -C "$repo" symbolic-ref -q HEAD >/dev/null 2>&1; then
+          dc=$(git -C "$repo" rev-list --count HEAD --not --branches --remotes 2>/dev/null || echo 0)
+          if [ "${dc:-0}" -gt 0 ]; then brs="${brs}HEAD:detached(${dc}) "; fi
+        fi
+        lines="${lines}    ${unpushed} unpushed $(plural "$unpushed" commit commits) — ${brs}(last ${d}d ago)
+"
+        worst=2
+      fi
+    fi
+
+    changed=0
+    newest=0
+    while IFS= read -r -d '' entry; do
+      st=${entry:0:2}
+      f=${entry:3}
+      case $st in
+        R*|C*|?R|?C) IFS= read -r -d '' _orig || true ;;
+      esac
+      [ -n "$f" ] || continue
+      changed=$((changed + 1))
+      m=$(mtime "$repo/$f")
+      if [ "$m" -gt "$newest" ]; then newest=$m; fi
+    done < <(git -C "$repo" -c core.quotePath=false status --porcelain -z --untracked-files=no 2>/dev/null)
+
+    if [ "$changed" -gt 0 ]; then
+      approx=""
+      if [ "$newest" -eq 0 ]; then
+        newest=$(git -C "$repo" log -1 --format=%ct 2>/dev/null || echo "$now")
+        approx="~"
+      fi
+      age=$(( now - newest ))
+      if [ "$age" -ge "$cutoff" ]; then
+        lines="${lines}    ${changed} uncommitted $(plural "$changed" file files) — untouched for ${approx}$((age / 86400))d
+"
+        if [ "$worst" -lt 1 ]; then worst=1; fi
+      fi
+    fi
+
+    nstash=$(git -C "$repo" stash list 2>/dev/null | wc -l | tr -d ' ')
+    if [ "${nstash:-0}" -gt 0 ]; then
+      while IFS= read -r st; do
+        [ -n "$st" ] || continue
+        sts=${st%% *}; rest=${st#* }
+        age=$(( now - sts ))
+        if [ "$age" -ge "$cutoff" ]; then
+          lines="${lines}    stash $(( age / 86400 ))d old — ${rest}
+"
+          if [ "$worst" -lt 1 ]; then worst=1; fi
+        fi
+      done <<EOF
+$(git -C "$repo" stash list --format='%ct %gd: %gs' 2>/dev/null)
+EOF
+    fi
+
+    [ -n "$lines" ] || continue
+    if [ "$worst" -ge 2 ]; then
+      n_risk=$((n_risk + 1))
+      emit "${C_RED}${C_BLD}AT RISK${C_OFF}  $(tilde "$repo")"
+    else
+      n_stale=$((n_stale + 1))
+      emit "${C_YEL}${C_BLD}STALE${C_OFF}    $(tilde "$repo")"
+    fi
+    emit "${lines%
+}"
+  done <<EOF
+$(find "$base" -maxdepth "$depth" -name .git -not -path '*/node_modules/*' 2>/dev/null)
+EOF
+done <<EOF
+$paths
+EOF
+
+printf '%s%s%s  scanned %d %s\n\n' "$C_BLD" "$PROG" "$C_OFF" "$n_repos" "$(plural "$n_repos" repository repositories)"
+[ -n "$report" ] && printf '%s\n' "${report%
+}"
+
+if [ "$n_risk" -gt 0 ]; then
+  printf '\n%s%d at risk%s, %d stale.\n' "$C_RED" "$n_risk" "$C_OFF" "$n_stale"
+  [ "$do_fetch" -eq 0 ] && printf '%s(compared against local remote-tracking refs; use --fetch to refresh)%s\n' "$C_DIM" "$C_OFF"
+  exit 1
+elif [ "$n_stale" -gt 0 ]; then
+  printf '\n%s%d stale.%s Nothing is at risk of being lost.\n' "$C_YEL" "$n_stale" "$C_OFF"
+  exit 0
+else
+  printf '%sEverything exists somewhere other than this disk.%s\n' "$C_GRN" "$C_OFF"
+  exit 0
+fi
