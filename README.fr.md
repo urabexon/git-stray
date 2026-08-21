@@ -89,15 +89,25 @@ git stray --depth 6 ~      # profondeur de recherche (4 par défaut)
 | AT RISK | Un dépôt sans aucun remote — chacun de ses commits n'existe qu'ici |
 | STALE | Des modifications non commitées de fichiers suivis, plus anciennes que `--days` |
 | STALE | Des stash plus anciens que `--days` |
+| STALE | Des fichiers non suivis et non ignorés, jamais ajoutés, plus anciens que `--days` |
 
 Les dépôts situés dans des répertoires cachés (`~/.nvm`, `~/.oh-my-zsh` et
 consorts) sont ignorés par défaut : ce sont les clones d'autres personnes, pas
 votre travail.
 
-Les âges proviennent des dates de commit et de stash, ainsi que des dates de
-modification des fichiers. Lorsqu'aucun fichier ne permet de lire une date —
-une suppression, un renommage — l'âge se rabat sur la date du dernier commit
-et s'affiche avec un `~`. Le constat n'est jamais silencieusement abandonné.
+Les âges des commits et des stash proviennent de git lui-même : ils sont exacts.
+
+Les âges des modifications non commitées et des fichiers non suivis proviennent
+de la date de modification des fichiers, et s'affichent **toujours** avec un `~`.
+Une mtime indique quand un fichier a été *écrit* pour la dernière fois, pas quand
+le travail a été fait : `git checkout`, `git pull` et `git stash pop` réécrivent
+tous des fichiers sans rien changer à ce que vous avez produit. Un travail
+vieux de deux ans peut donc paraître vieux d'une semaine, et être masqué par
+`--days`. Considérez ces nombres comme une borne inférieure, non une mesure.
+
+Lorsqu'aucun fichier ne permet de lire une date — une suppression, un renommage —
+l'âge se rabat sur la date du dernier commit. Le constat n'est jamais
+silencieusement abandonné.
 
 ## Précision
 

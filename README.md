@@ -91,13 +91,22 @@ git stray ~ || echo "push something before you close the laptop"
 | AT RISK | A repository with no remote at all — every commit in it is single-copy |
 | STALE | Uncommitted changes to tracked files, older than `--days` |
 | STALE | Stashes older than `--days` |
+| STALE | Untracked, unignored files that were never added, older than `--days` |
 
 Repositories inside hidden directories (`~/.nvm`, `~/.oh-my-zsh` and friends)
 are skipped by default — those are other people's clones, not your work.
 
-Ages come from commit and stash dates, and from file mtimes. When a change has
-no file to read an mtime from — a deletion, a rename — the age falls back to
-the last commit date and is printed with a `~`. It is never silently dropped.
+Ages for commits and stashes come from git itself and are exact.
+
+Ages for uncommitted changes and untracked files come from file mtimes, and are
+always printed with a `~`. An mtime records when a file was last *written*, not
+when the work was done: `git checkout`, `git pull` and `git stash pop` all
+rewrite files without changing anything you did. Work from two years ago can
+therefore look a week old, and be suppressed by `--days`. Treat those numbers as
+a lower bound on age, not a measurement.
+
+When there is no file to read an mtime from at all — a deletion, a rename — the
+age falls back to the last commit date. It is never silently dropped.
 
 ## Accuracy
 
