@@ -147,14 +147,34 @@ while IFS= read -r base; do
     done < <(git -C "$repo" -c core.quotePath=false status --porcelain -z --untracked-files=no 2>/dev/null)
 
     if [ "$changed" -gt 0 ]; then
-      approx=""
       if [ "$newest" -eq 0 ]; then
         newest=$(git -C "$repo" log -1 --format=%ct 2>/dev/null || echo "$now")
-        approx="~"
       fi
       age=$(( now - newest ))
       if [ "$age" -ge "$cutoff" ]; then
-        lines="${lines}    ${changed} uncommitted $(plural "$changed" file files) — untouched for ${approx}$((age / 86400))d
+        lines="${lines}    ${changed} uncommitted $(plural "$changed" file files) — untouched for ~$((age / 86400))d
+"
+        if [ "$worst" -lt 1 ]; then worst=1; fi
+      fi
+    fi
+
+    untracked=0
+    unewest=0
+    while IFS= read -r -d '' u; do
+      [ -n "$u" ] || continue
+      untracked=$((untracked + 1))
+      m=$(mtime "$repo/${u%/}")
+      if [ "$m" -gt "$unewest" ]; then unewest=$m; fi
+    done < <(git -C "$repo" -c core.quotePath=false ls-files --others --exclude-standard \
+               --directory --no-empty-directory -z 2>/dev/null)
+
+    if [ "$untracked" -gt 0 ]; then
+      if [ "$unewest" -eq 0 ]; then
+        unewest=$(git -C "$repo" log -1 --format=%ct 2>/dev/null || echo "$now")
+      fi
+      uage=$(( now - unewest ))
+      if [ "$uage" -ge "$cutoff" ]; then
+        lines="${lines}    ${untracked} untracked $(plural "$untracked" entry entries) — never added, untouched for ~$((uage / 86400))d
 "
         if [ "$worst" -lt 1 ]; then worst=1; fi
       fi
